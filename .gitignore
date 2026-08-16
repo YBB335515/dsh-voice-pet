@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.log
+
+# 用户数据（不提交）
+history.jsonl
+conversations/
+.user_vocab.txt
+.voice_session.json
+.voice_config.json
+web_server.log
+web_server.err.log
+_gui.log
+
+# 语音模型（太大，用 install.py 下载）
+whisper-base/
+whisper-small/
+
+# 系统
+Thumbs.db
+.DS_Store

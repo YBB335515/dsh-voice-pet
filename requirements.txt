@@ -1,0 +1,8 @@
+faster-whisper>=1.0
+pyaudio
+pynput
+pystray
+pillow
+edge-tts
+sounddevice
+numpy

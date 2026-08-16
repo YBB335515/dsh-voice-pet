@@ -1,0 +1,22 @@
+{
+  "name": "dsh-voice-pet",
+  "version": "1.0.0",
+  "description": "DeepSeek Harness 语音桌宠：全局 F2 语音对话、任务进度气泡、完成/审批语音提醒（Windows）",
+  "bin": {
+    "dsh-voice-pet": "cli.js"
+  },
+  "files": [
+    "cli.js", "install.py", "requirements.txt", "voice_gui.py", "voice_chat.py",
+    "speak_edge.py", "watcher.py", "web_server.py", "speak.ps1", "scan_devices.py",
+    "web/", "README.md", "LICENSE"
+  ],
+  "keywords": ["deepseek", "deepseek-harness", "dsh", "voice", "assistant", "desktop-pet", "whisper", "tts"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YBB335515/dsh-voice-pet"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

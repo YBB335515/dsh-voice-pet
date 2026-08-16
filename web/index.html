@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>语音助手 · 对话记录</title>
+<style>
+  body { font-family: "Microsoft YaHei", system-ui, sans-serif; max-width: 780px; margin: 24px auto; padding: 0 16px 60px; background: #f6f7f9; color: #222; }
+  h1 { font-size: 19px; color: #333; border-bottom: 1px solid #e5e6ea; padding-bottom: 12px; }
+  #count { font-size: 13px; color: #999; font-weight: normal; }
+  .msg { display: flex; margin: 14px 0; }
+  .side { flex: 0 0 56px; font-size: 12px; color: #999; padding-top: 8px; }
+  .bubble { max-width: 82%; padding: 10px 14px; border-radius: 12px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; font-size: 14.5px; }
+  .msg.user { justify-content: flex-end; }
+  .msg.user .side { text-align: right; order: 2; }
+  .msg.user .bubble { background: #4c6ef5; color: #fff; border-top-right-radius: 3px; }
+  .msg.ai .bubble { background: #fff; border: 1px solid #e3e4e9; border-top-left-radius: 3px; }
+  .empty { color: #999; text-align: center; margin-top: 80px; font-size: 15px; }
+  .role { display:block; margin-bottom: 4px; }
+  .msg.user .role { text-align: right; }
+</style>
+</head>
+<body>
+<h1>🎙️ 语音助手 · 对话记录 <span id="count"></span></h1>
+<div id="list"><div class="empty">还没有对话 —— 按 F2 说第一句话吧</div></div>
+<script>
+async function load(){
+  try {
+    const r = await fetch('/history.json?_=' + Date.now());
+    const entries = await r.json();
+    const list = document.getElementById('list');
+    document.getElementById('count').textContent = '（' + entries.length + ' 条）';
+    if (!entries.length) { list.innerHTML = '<div class="empty">还没有对话 —— 按 F2 说第一句话吧</div>'; return; }
+    list.innerHTML = entries.map(e => {
+      const user = e.role === 'user';
+      return '<div class="msg ' + (user ? 'user' : 'ai') + '"><div class="side">' + (user ? '你' : 'AI') + '<br>' + e.time + '</div><div class="bubble">' + esc(e.text) + '</div></div>';
+    }).join('');
+    window.scrollTo(0, document.body.scrollHeight);
+  } catch (err) { /* 服务器还没起来 */ }
+}
+function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+load();
+setInterval(load, 3000);
+</script>
+</body>
+</html>
