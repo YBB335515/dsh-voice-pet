@@ -297,12 +297,12 @@ def ensure_voice_sessions():
         else:
             gui = rpc("session.create", {"cwd": WORKSPACE, "agentPreset": "standard"})["sessionId"]
 
-    # voice 轻量：缓存 → 新建
+    # voice 轻量：缓存 → 新建（minimal 极简模式：思考少、回答快）
     voice = cache.get("voice") if cache.get("voice") in ids else None
     if not voice:
-        created = rpc("session.create", {"cwd": WORKSPACE, "agentPreset": "standard"})
+        created = rpc("session.create", {"cwd": WORKSPACE, "agentPreset": "minimal"})
         voice = created["sessionId"]
-        print(f"[voice] 新建轻量语音会话 {voice}")
+        print(f"[voice] 新建轻量语音会话（极简模式） {voice}")
 
     with open(SESSION_CACHE, "w", encoding="utf-8") as f:
         json.dump({"gui": gui, "voice": voice}, f, ensure_ascii=False)
