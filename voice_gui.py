@@ -593,8 +593,23 @@ def toggle_pet():
         pet_root.deiconify()
 
 
+def single_instance():
+    """Windows 互斥体：保证只有一个桌宠实例（防开机自启 + bat 双开）。"""
+    try:
+        import ctypes
+        mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "dsh_voice_pet_mutex")
+        if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            return False
+        return True
+    except Exception:
+        return True
+
+
 def main():
     global gui_sid, voice_sid
+    if not single_instance():
+        print("桌宠已在运行，本实例自动退出")
+        return
     gui_sid, voice_sid = vc.ensure_voice_sessions()
     start_webhook_server()  # 接收 DSH 通知（回合完成/待审批）
     listener = keyboard.Listener(on_press=on_press)

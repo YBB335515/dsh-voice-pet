@@ -36,7 +36,13 @@ def start_dsh():
 
 def start_voice():
     os.chdir(VOICE_DIR)
-    subprocess.Popen([sys.executable, os.path.join(VOICE_DIR, "voice_gui.py")],
+    # 用 python.exe 而非 pythonw.exe：pythonw 跑 pystray 会崩溃
+    exe = sys.executable
+    if exe.lower().endswith("pythonw.exe"):
+        cand = exe[:-11] + "python.exe"
+        if os.path.exists(cand):
+            exe = cand
+    subprocess.Popen([exe, os.path.join(VOICE_DIR, "voice_gui.py")],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      creationflags=NO_WINDOW)
 
