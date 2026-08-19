@@ -210,6 +210,23 @@ def run_dialog():
                 ui_q.put(("phase", "thinking", "上下文 %.0f%% · 自动压缩中…" % (ratio * 100)))
         except Exception:
             pass
+        # 定时提醒：先检查是否是"提醒我xxx"类请求
+        try:
+            rem = vc.parse_reminder(corrected)
+            if rem:
+                due, content = rem
+                vc.add_reminder(due, content)
+                when = due.strftime("%H:%M")
+                ui_q.put(("msg", ("你", corrected)))
+                vc.append_history("user", corrected)
+                ui_q.put(("msg", ("AI", "好的，%s 提醒你%s" % (due.strftime("%m-%d %H:%M"), content))))
+                vc.append_history("ai", "好的，%s 提醒你%s" % (due.strftime("%m-%d %H:%M"), content))
+                ui_q.put(("phase", "idle", "⏰ 已设置 %s 提醒%s" % (when, content)))
+                speak_bg("好的，%s 提醒你%s" % (when, content))
+                return
+        except Exception as ex:
+            print("[voice] 提醒解析异常:", ex)
+
         # 智能任务分类：简单 → 轻量会话快答出声；复杂 → DSH 主会话（继承对话）
         task = vc.classify_task(corrected)
         if task == "complex":
@@ -318,6 +335,12 @@ def poll_queue():
                     speak_bg("任务完成啦。")
                 else:
                     notify_bubble(title + "\n" + text[:120], None, 6000)
+            elif kind == "remind":
+                # 定时提醒到点：气泡 + 提示音 + 语音说话
+                content = item[1]
+                notify_bubble("⏰ 提醒：" + content, "⏰", 10000)
+                beep(1000, 300)
+                speak_bg("提醒，" + content)
     except queue.Empty:
         pass
     pet_root.after(100, poll_queue)
@@ -437,6 +460,17 @@ def handle_hotkey():
     except queue.Empty:
         pass
     pet_root.after(50, handle_hotkey)
+
+
+def check_reminders():
+    """定时提醒循环：每 5 秒检查本地提醒队列，到点推送提醒。"""
+    try:
+        due = vc.pop_due_reminders()
+        for content in due:
+            ui_q.put(("remind", content))
+    except Exception:
+        pass
+    pet_root.after(5000, check_reminders)
 
 
 def start_webhook_server():
@@ -584,6 +618,7 @@ def build_pet():
     pet_root.after(100, poll_queue)
     pet_root.after(500, animate)
     pet_root.after(50, handle_hotkey)
+    pet_root.after(5000, check_reminders)
 
 
 def toggle_pet():

@@ -268,6 +268,120 @@ def classify_task(text):
     return "simple"
 
 
+# ── 定时提醒 ──────────────────────────────────────────────────────
+REMINDS_FILE = os.path.join(BASE_DIR, ".reminders.json")
+TODO_TASKS_FILE = r"D:\1_claude尝试\desktop-todo-widget\data\tasks.json"
+
+
+def parse_reminder(text):
+    """解析定时提醒。返回 (due: datetime, content: str) 或 None。
+    支持：N秒/分钟/小时后、明天X点[X分]、[今天/下午/晚上]X点[X分]。"""
+    import re
+    from datetime import datetime, timedelta
+    t = (text or "").strip()
+    if not any(k in t for k in ("提醒", "定时", "到点", "记得", "叫我")):
+        return None
+    now = datetime.now()
+    due = None
+    expr = None
+    def _minutes(m2):
+        if not m2:
+            return 0
+        if m2 == "半":
+            return 30
+        return int(m2)
+
+    m = re.search(r"(\d+)\s*(秒|分钟|小时)\s*后", t)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        expr = m.group(0)
+        delta = {"秒": timedelta(seconds=n), "分钟": timedelta(minutes=n), "小时": timedelta(hours=n)}[unit]
+        due = now + delta
+    else:
+        m = re.search(r"明天\s*(\d{1,2})\s*点\s*(半|(?:\d{1,2})\s*分?)?", t)
+        if m:
+            expr = m.group(0)
+            day = now + timedelta(days=1)
+            due = day.replace(hour=int(m.group(1)), minute=_minutes(m.group(2)), second=0, microsecond=0)
+        else:
+            m = re.search(r"(?:今天|下午|晚上|早上|上午)?\s*(\d{1,2})\s*点\s*(半|(?:\d{1,2})\s*分?)?", t)
+            if m:
+                expr = m.group(0)
+                hour = int(m.group(1))
+                if ("下午" in t or "晚上" in t) and hour < 12:
+                    hour += 12
+                due = now.replace(hour=hour, minute=_minutes(m.group(2)), second=0, microsecond=0)
+                if due < now:
+                    due += timedelta(days=1)
+    # "明天xxx"（无具体时间）→ 默认明天 9 点
+    if due is None:
+        m = re.search(r"明天", t)
+        if m:
+            expr = "明天"
+            due = (now + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+    if due is None:
+        return None
+    content = t
+    if expr:
+        content = content.replace(expr, "")
+    content = re.sub(r"^(请|麻烦|帮我|记得)?(提醒我|提醒|定时)?", "", content)
+    content = content.strip(" 的，。！!?？")
+    if not content:
+        content = "定时提醒"
+    return due, content
+
+
+def add_todo_reminder(due_iso, content):
+    """写入桌面待办 tasks.json（第一页追加，待办 app 每秒自动重载）。"""
+    with open(TODO_TASKS_FILE, encoding="utf-8") as f:
+        data = json.load(f)
+    pages = data.setdefault("pages", [])
+    if not pages:
+        pages.append({"name": "提醒", "tasks": []})
+    page = pages[0]
+    tasks = page.setdefault("tasks", [])
+    new_id = max([t.get("id", 0) for t in tasks] + [0]) + 1
+    tasks.append({"id": new_id, "content": content, "done": False,
+                  "due": due_iso, "recurring": ""})
+    with open(TODO_TASKS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def add_reminder(due, content):
+    """设置提醒：本地持久化（桌宠到点出声）+ 写入待办 app。"""
+    data = []
+    if os.path.exists(REMINDS_FILE):
+        try:
+            with open(REMINDS_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = []
+    data.append({"due": due.timestamp(), "content": content})
+    with open(REMINDS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    try:
+        add_todo_reminder(due.strftime("%Y-%m-%dT%H:%M:%S"), content)
+    except Exception as e:
+        print("[voice] 写待办失败:", e)
+
+
+def pop_due_reminders():
+    """返回并移除已到期的本地提醒（桌宠出声用）。"""
+    if not os.path.exists(REMINDS_FILE):
+        return []
+    try:
+        with open(REMINDS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return []
+    now = time.time()
+    due = [r["content"] for r in data if r.get("due", 0) <= now]
+    rest = [r for r in data if r.get("due", 0) > now]
+    with open(REMINDS_FILE, "w", encoding="utf-8") as f:
+        json.dump(rest, f, ensure_ascii=False, indent=2)
+    return due
+
+
 def ensure_voice_sessions():
     """双会话：(gui 主会话, 轻量语音会话)。
     gui：最近活跃的 DSH 会话（长任务用，继承用户对话）
