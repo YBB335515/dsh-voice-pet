@@ -204,6 +204,16 @@ def compact_session(session_id, target_ratio=0.5):
             pass
     return True
 
+def cancel_session(session_id):
+    """取消会话当前正在运行的回合（用于小任务升级到主会话）。"""
+    try:
+        rpc("session.cancel", {"sessionId": session_id})
+        return True
+    except Exception as e:
+        print("[voice] 取消失败:", e)
+        return False
+
+
 def reset_session():
     """删除会话缓存并新建（词库 .user_vocab.txt 独立保留，不丢）。返回新会话 id。"""
     try:
@@ -423,9 +433,11 @@ def ensure_voice_sessions():
     return gui, voice
 
 
-def ask(session_id, text, timeout=180, on_status=None):
+def ask(session_id, text, timeout=180, on_status=None, switch_after=None):
     """提交问题，只收集提问后新增的 assistant 文本，拼接成回答。
-    on_status(msg)：每轮进度回调（思考中/工具调用/进度符号），供界面显示。"""
+    on_status(msg)：每轮进度回调（思考中/工具调用/进度符号），供界面显示。
+    switch_after：秒数；超过该时长仍无正式回答内容时返回 '__SLOW__'
+    （调用方可据此判定任务复杂，转交主会话处理）。"""
     def status(msg):
         if on_status:
             on_status(msg)
@@ -458,8 +470,13 @@ def ask(session_id, text, timeout=180, on_status=None):
     deadline = time.time() + timeout
     quiet = 0
     elapsed_mark = 0
+    started_at = time.time()
     while time.time() < deadline:
         time.sleep(1.5)
+        # 时间判定：超过 switch_after 还没有正式回答内容 → 报告为慢任务
+        if switch_after is not None and not parts and (time.time() - started_at) > switch_after:
+            status("\n[voice] 超过 %ds 仍未完成 → 判定为复杂任务\n" % switch_after)
+            return "__SLOW__"
         try:
             h = rpc("session.history", {"sessionId": session_id, "maxMessages": 200})
         except Exception as e:
