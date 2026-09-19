@@ -269,7 +269,9 @@ def check_context_pressure(session_id, threshold=0.7):
         items = rpc("session.list", {})["items"]
         for it in items:
             if it["sessionId"] == session_id:
-                p = (it.get("projections") or {}).get("contextPressure") or {}
+                _proj = it.get("projections") or {}
+                _vals = _proj.get("values") if isinstance(_proj.get("values"), dict) else _proj
+                p = _vals.get("contextPressure") or {}
                 pressure = p.get("pressureTokens") or 0
                 window = p.get("contextWindow") or 1
                 ratio = pressure / window if window else 0.0
