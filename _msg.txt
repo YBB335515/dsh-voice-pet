@@ -1,0 +1,6 @@
+docs: v1.1.0 - update README, add CHANGELOG, bump version
+
+- README rewritten for current features (image pet, phase bubbles, edge dock animation,
+  reminders, notification speech) with configuration and animation parameter docs
+- CHANGELOG.md added (1.0.0 / 1.1.0)
+- package.json version bumped to 1.1.0
