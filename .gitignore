@@ -20,3 +20,10 @@ whisper-small/
 # 系统
 Thumbs.db
 .DS_Store
+
+# 临时/调试文件（下划线开头）
+_*.txt
+_*.py
+_*.png
+pet.log
+pet.err.log
