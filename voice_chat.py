@@ -156,11 +156,107 @@ DSH_URL = "http://127.0.0.1:3080"
 
 _whisper_model = None
 
+# ── DSH 版本兼容层 ────────────────────────────────────────────
+# 新版 DSH（deepseek-harness-next）：需要 token 认证（换 cookie）、
+#   端点与方法名用斜杠（session/list）、参数按签名包装（request / _request）、
+#   且没有 session.history（改用 session/page 读事件）。
+# 旧版 DSH：无认证、点号端点、payload 直传。
+_API = {"next": None}
+_COOKIE = {"header": None, "ts": 0.0}
+_NEXT_WRAP = {
+    "session.list": "_request",
+    "session.create": "request",
+    "session.prompt": "request",
+    "session.page": "request",
+    "session.cancel": "request",
+}
+_NEXT_PRESET = {"standard": "ptc", "code": "ptc", "minimal": "ptc", "cordis": "ptc"}
+
+
+def _is_next():
+    """探测 DSH 版本：新版根路径 401（需认证），旧版 200。"""
+    if _API["next"] is None:
+        try:
+            req = urllib.request.Request(DSH_URL + "/", method="GET")
+            with urllib.request.urlopen(req, timeout=5):
+                _API["next"] = False
+        except urllib.error.HTTPError as e:
+            _API["next"] = (e.code == 401)
+        except Exception:
+            _API["next"] = False
+    return bool(_API["next"])
+
+
+def _next_cookie():
+    """新版认证：读 DSH 启动日志里的 token，用 /?token= 换会话 cookie。"""
+    now = time.time()
+    if _COOKIE["header"] and now - _COOKIE["ts"] < 600:
+        return _COOKIE["header"]
+    tok = None
+    for lg in (os.path.join(WORKSPACE, "deepseek-harness-next", "dsh-runtime.log"),
+               os.path.join(WORKSPACE, "deepseek-harness", "dsh-runtime.log")):
+        try:
+            if os.path.exists(lg):
+                with open(lg, encoding="utf-8", errors="replace") as f:
+                    m = re.search(r"token=([A-Za-z0-9_\-]+)", f.read())
+                if m:
+                    tok = m.group(1)
+                    break
+        except Exception:
+            pass
+    if not tok:
+        return None
+    try:
+        import http.cookiejar
+        jar = http.cookiejar.CookieJar()
+        op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+        op.open(DSH_URL + "/?token=" + tok, timeout=20)
+        for c in jar:
+            _COOKIE["header"] = "%s=%s" % (c.name, c.value)
+            _COOKIE["ts"] = now
+            return _COOKIE["header"]
+    except Exception as e:
+        print("[voice] DSH 认证失败:", e)
+    return None
+
+
 def rpc(method, payload):
-    body = json.dumps({"type": "client-request", "rpcId": str(uuid.uuid4()),
-                       "method": method, "payload": payload}).encode("utf-8")
-    req = urllib.request.Request(f"{DSH_URL}/api/{method}", data=body,
-                                 headers={"content-type": "application/json"})
+    """调用 DSH API（自动兼容新版/旧版协议）。"""
+    if _is_next():
+        if method == "session.history":   # 新版无此方法 → 用 session/page 转换
+            sid = payload.get("sessionId")
+            mx = payload.get("maxMessages", 200)
+            cursor = 0
+            try:
+                for it in rpc("session.list", {}).get("items", []):
+                    if it.get("sessionId") == sid:
+                        cursor = int((it.get("projections") or {}).get("asOfSeq") or 0)
+                        break
+            except Exception:
+                pass
+            page = rpc("session.page", {"address": {"kind": "session", "sessionId": sid},
+                                        "throughSeq": cursor or 1, "maxMessages": mx})
+            recs = (page or {}).get("records") or []
+            return {"events": [{"event": r.get("event")} for r in recs]}
+        ep = method.replace(".", "/")
+        args = dict(payload)
+        if method == "session.create":
+            args["agentPreset"] = _NEXT_PRESET.get(str(args.get("agentPreset")), args.get("agentPreset") or "ptc")
+        elif method == "session.prompt":
+            args["requestId"] = str(uuid.uuid4())
+        body = {"type": "client-request", "rpcId": str(uuid.uuid4()), "method": ep,
+                "payload": {"args": {_NEXT_WRAP.get(method, "request"): args}}}
+        url = f"{DSH_URL}/api/{ep}"
+        hdrs = {"content-type": "application/json"}
+        ck = _next_cookie()
+        if ck:
+            hdrs["cookie"] = ck
+    else:
+        body = {"type": "client-request", "rpcId": str(uuid.uuid4()),
+                "method": method, "payload": payload}
+        url = f"{DSH_URL}/api/{method}"
+        hdrs = {"content-type": "application/json"}
+    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=hdrs)
     with urllib.request.urlopen(req, timeout=60) as resp:
         j = json.loads(resp.read().decode("utf-8"))
     if not j.get("result", {}).get("ok"):
@@ -488,7 +584,23 @@ def ask(session_id, text, timeout=180, on_status=None, switch_after=None):
             seen = max(e["seq"] for e in new)
             quiet = 0
             for e in sorted(new, key=lambda x: x["seq"]):
-                if e["type"] == "assistant/chunk":
+                if e["type"] == "assistant/message":
+                    # 新版 DSH：助手输出是整段 message（不是 chunk 流）
+                    _d = e.get("data") or {}
+                    _msg = _d.get("message") or {}
+                    _got = False
+                    for _p in (_msg.get("content") or []):
+                        if isinstance(_p, dict) and _p.get("type") == "text" and _p.get("text"):
+                            parts.append(_p["text"])
+                            _got = True
+                    if not _got:
+                        # 兜底：从 stream 字段取增量块
+                        _st = _d.get("stream")
+                        if isinstance(_st, list):
+                            for _c in _st:
+                                if isinstance(_c, dict) and _c.get("type") == "text-delta" and _c.get("text"):
+                                    parts.append(_c["text"])
+                elif e["type"] == "assistant/chunk":
                     c = e.get("data", {}).get("chunk", {})
                     ctype = c.get("type")
                     if ctype == "text-delta" and c.get("text"):

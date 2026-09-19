@@ -56,6 +56,19 @@ python install.py        # 依赖 + 模型（约 460MB，可用 --model base 换
 python voice_gui.py      # 启动桌宠
 ```
 
+## DSH 版本兼容
+
+桌宠**同时兼容新旧两版 DeepSeek Harness**，自动探测，无需配置：
+
+| 项目 | 旧版 deepseek-harness | 新版 deepseek-harness-next（PTC 模式） |
+|---|---|---|
+| 认证 | 无 | 需要 token（从 dsh-runtime.log 读取，自动换取 cookie） |
+| API 端点 | /api/session.list | /api/session/list |
+| 参数 | 直接传 | 按 Typert 签名包装（request / _request） |
+| 读历史 | session.history | session.page（自动转换） |
+| 助手输出 | assistant/chunk 流 | assistant/message 整段 |
+| preset | standard / code / minimal | ptc |
+
 ## ⚙️ 配置
 
 配置文件 `.voice_config.json`（放在脚本同目录）：
