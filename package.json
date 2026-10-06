@@ -1,6 +1,6 @@
 {
   "name": "dsh-voice-pet",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "DeepSeek Harness 语音桌宠：全局 F2 语音对话、任务进度气泡、完成/审批语音提醒（Windows）",
   "bin": {
     "dsh-voice-pet": "cli.js"

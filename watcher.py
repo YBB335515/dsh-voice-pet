@@ -51,12 +51,23 @@ def desktop_running():
 
 
 def start_desktop():
-    """带日志启动桌面端：日志里会出现 dsh web: http://127.0.0.1:PORT/?token=..."""
+    """启动桌面端：优先用 launch_desktop（分配隐藏控制台 + 日志重定向）。
+
+    隐藏控制台是必须的：Windows ACL 沙箱的受限令牌下，控制台子进程必须继承控制台，
+    否则会以 STATUS_DLL_INIT_FAILED (0xC0000142) 死掉（桌面端默认是无控制台的 GUI 进程）。
+    """
     if not os.path.exists(DESKTOP_EXE):
         return False
     try:
+        sys.path.insert(0, VOICE_DIR)
+        import launch_desktop
+        launch_desktop.launch(DESKTOP_LOG)
+        return True
+    except Exception:
+        pass
+    try:
         logf = open(DESKTOP_LOG, "ab", buffering=0)
-        logf.write(("\n=== watcher start %s ===\n" % time.strftime("%Y-%m-%d %H:%M:%S")).encode("utf-8"))
+        logf.write(("\n=== watcher start (no console) %s ===\n" % time.strftime("%Y-%m-%d %H:%M:%S")).encode("utf-8"))
         subprocess.Popen([DESKTOP_EXE], cwd=DESKTOP_DIR,
                          stdout=logf, stderr=subprocess.STDOUT,
                          creationflags=NO_WINDOW | NEW_GROUP)

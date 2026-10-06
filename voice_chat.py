@@ -7,7 +7,7 @@
 被 voice_assistant.py（热键启动器）复用。
 依赖: sounddevice numpy faster-whisper（模型已放 whisper-base/ 本地目录）
 """
-import sys, os, json, time, uuid, datetime, subprocess, urllib.request, argparse, re
+import io, sys, os, json, time, uuid, datetime, subprocess, urllib.request, argparse, re
 
 # 控制台输出兜底：无法编码的字符（如 emoji）替换为 ?，不影响中文
 try:
@@ -182,7 +182,7 @@ def _discover_endpoint():
         return _ENDPOINT
     base = token = None
     try:
-        with io.open(lg, encoding="utf-8", errors="replace") as f:
+        with open(lg, encoding="utf-8", errors="replace") as f:
             text = f.read()
         hits = re.findall(r"(http://127\.0\.0\.1:\d+)/?\?token=([A-Za-z0-9_\-]+)", text)
         if hits:
