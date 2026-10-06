@@ -152,7 +152,83 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))   # D:\1_claude尝试\voic
 WORKSPACE = os.path.dirname(BASE_DIR)                    # D:\1_claude尝试
 SESSION_CACHE = os.path.join(BASE_DIR, ".voice_session.json")
 SPEAK_PS1 = os.path.join(BASE_DIR, "speak.ps1")
-DSH_URL = "http://127.0.0.1:3080"
+DSH_URL = "http://127.0.0.1:3080"   # 旧版（web 构建）默认端口；发现失败时回退
+DESKTOP_PORT = 19387                # 桌面端固定端口（其 bundle 内写死）
+_LOG_CANDIDATES = (
+    os.path.join(BASE_DIR, "dsh-desktop.log"),
+    os.path.join(WORKSPACE, "voice", "dsh-desktop.log"),
+    os.path.join(WORKSPACE, "deepseek-harness-next", "dsh-runtime.log"),
+    os.path.join(WORKSPACE, "deepseek-harness", "dsh-runtime.log"),
+)
+_ENDPOINT = {"base": None, "token": None, "stamp": None}
+_PROBE = {"base": None, "ts": 0.0}
+
+
+def _discover_endpoint():
+    """从启动日志发现 DSH 地址与启动 token（桌面端 token 每次启动都变）。"""
+    newest = None
+    for lg in _LOG_CANDIDATES:
+        try:
+            if os.path.exists(lg):
+                mt = os.path.getmtime(lg)
+                if newest is None or mt > newest[0]:
+                    newest = (mt, lg)
+        except Exception:
+            pass
+    if newest is None:
+        return None
+    mt, lg = newest
+    if _ENDPOINT.get("stamp") == (mt, lg):
+        return _ENDPOINT
+    base = token = None
+    try:
+        with io.open(lg, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        hits = re.findall(r"(http://127\.0\.0\.1:\d+)/?\?token=([A-Za-z0-9_\-]+)", text)
+        if hits:
+            base, token = hits[-1][0], hits[-1][1]
+    except Exception:
+        pass
+    _ENDPOINT.update({"base": base, "token": token, "stamp": (mt, lg)})
+    return _ENDPOINT
+
+
+def _alive(base, timeout=2):
+    """地址是否活着（200 或 401 都算活：401 说明服务在但需要 token）。"""
+    try:
+        urllib.request.urlopen(base + "/", timeout=timeout)
+        return True
+    except urllib.error.HTTPError:
+        return True
+    except Exception:
+        return False
+
+
+def _base():
+    """当前 DSH base URL：启动日志（且在跑）-> 环境变量 -> 探活 19387/3080 -> 回退 3080。"""
+    ep = _discover_endpoint() or {}
+    if ep.get("base") and _alive(ep["base"]):
+        return ep["base"]
+    now = time.time()
+    if _PROBE["base"] and now - _PROBE["ts"] < 60:
+        return _PROBE["base"]
+    cands = []
+    env = os.environ.get("DSH_WEB_URL")
+    if env:
+        cands.append(env.rstrip("/"))
+    cands += ["http://127.0.0.1:%d" % DESKTOP_PORT, DSH_URL]
+    for c in cands:
+        try:
+            urllib.request.urlopen(c + "/", timeout=2)
+            _PROBE.update({"base": c, "ts": now})
+            return c
+        except urllib.error.HTTPError:
+            _PROBE.update({"base": c, "ts": now})   # 401 也说明服务已起
+            return c
+        except Exception:
+            continue
+    return DSH_URL
+
 
 _whisper_model = None
 
@@ -162,7 +238,7 @@ _whisper_model = None
 #   且没有 session.history（改用 session/page 读事件）。
 # 旧版 DSH：无认证、点号端点、payload 直传。
 _API = {"next": None}
-_COOKIE = {"header": None, "ts": 0.0}
+_COOKIE = {"header": None, "ts": 0.0, "base": None}
 _NEXT_WRAP = {
     "session.list": "_request",
     "session.create": "request",
@@ -177,7 +253,7 @@ def _is_next():
     """探测 DSH 版本：新版根路径 401（需认证），旧版 200。"""
     if _API["next"] is None:
         try:
-            req = urllib.request.Request(DSH_URL + "/", method="GET")
+            req = urllib.request.Request(_base() + "/", method="GET")
             with urllib.request.urlopen(req, timeout=5):
                 _API["next"] = False
         except urllib.error.HTTPError as e:
@@ -192,28 +268,25 @@ def _next_cookie():
     now = time.time()
     if _COOKIE["header"] and now - _COOKIE["ts"] < 600:
         return _COOKIE["header"]
-    tok = None
-    for lg in (os.path.join(WORKSPACE, "deepseek-harness-next", "dsh-runtime.log"),
-               os.path.join(WORKSPACE, "deepseek-harness", "dsh-runtime.log")):
-        try:
-            if os.path.exists(lg):
-                with open(lg, encoding="utf-8", errors="replace") as f:
-                    m = re.search(r"token=([A-Za-z0-9_\-]+)", f.read())
-                if m:
-                    tok = m.group(1)
-                    break
-        except Exception:
-            pass
+    ep = _discover_endpoint() or {}
+    base = ep.get("base") or _base()
+    tok = ep.get("token") if (ep.get("base") and _alive(ep["base"])) else None
     if not tok:
+        # 没有可用 token（桌面端未带日志启动）：走探活到的地址，由调用方收到 401
+        tok = None
+        _base()
         return None
+    if _COOKIE.get("base") != base:
+        _COOKIE["header"] = None      # cookie 绑定 host+port，端口变了要重新换
     try:
         import http.cookiejar
         jar = http.cookiejar.CookieJar()
         op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
-        op.open(DSH_URL + "/?token=" + tok, timeout=20)
+        op.open(base + "/?token=" + tok, timeout=20)
         for c in jar:
             _COOKIE["header"] = "%s=%s" % (c.name, c.value)
             _COOKIE["ts"] = now
+            _COOKIE["base"] = base
             return _COOKIE["header"]
     except Exception as e:
         print("[voice] DSH 认证失败:", e)
@@ -246,7 +319,7 @@ def rpc(method, payload):
             args["requestId"] = str(uuid.uuid4())
         body = {"type": "client-request", "rpcId": str(uuid.uuid4()), "method": ep,
                 "payload": {"args": {_NEXT_WRAP.get(method, "request"): args}}}
-        url = f"{DSH_URL}/api/{ep}"
+        url = f"{_base()}/api/{ep}"
         hdrs = {"content-type": "application/json"}
         ck = _next_cookie()
         if ck:
@@ -254,7 +327,7 @@ def rpc(method, payload):
     else:
         body = {"type": "client-request", "rpcId": str(uuid.uuid4()),
                 "method": method, "payload": payload}
-        url = f"{DSH_URL}/api/{method}"
+        url = f"{_base()}/api/{method}"
         hdrs = {"content-type": "application/json"}
     req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), headers=hdrs)
     with urllib.request.urlopen(req, timeout=60) as resp:
