@@ -2,6 +2,30 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.2.4] - 2026-10-06
+
+### 修复
+- **按 F2 说完话桌宠立刻闪退（不留任何 traceback）**：v1.2.3 的 `record_vad()` 每条 F2 都 `new PyAudio()`，并在 `finally` 里 `p.terminate()`，而它自己的读线程还阻塞在 `stream.read()` 里 → 两个线程在 PortAudio 内部相撞。实测**访问违例**（exit `-1073741819` / `0xC0000005`，`faulthandler` 抓到 read 与 terminate 两线程对峙），偶发伴随 `0xC0000374` 堆损坏
+- 改法：全局唯一 `PyAudio` 实例（`_pa()`，**永不 terminate**）；一条流的 `stop_stream()/close()` 由**读它自己的那条线程**在 `read()` 返回后执行，主线程只 `request_stop()` —— 不再存在任何跨线程关闭/销毁
+- 录音链路加 `except BaseException` 兜底：任何异常只写日志并返回 `None`，**绝不再打死桌宠**（本轮验收标准）
+- `voice_gui.py` 入口启用 `faulthandler` → 致命信号写 `pet_fault.log`，原生崩溃从此有据可查
+
+### 已知问题
+- `recognize_sapi()` 用的是 Windows **系统默认输入设备**（本机正是那个"能打开但永不出数据"的 MME 阵列麦克风）→ SAPI 兜底在本机 `rc=2` 不可用；主识别链路 `recognize_whisper()` 不受影响
+
+## [1.2.3] - 2026-10-06
+
+### 修复
+- **F2 卡在「🎤 我在听，请说话…」永不返回**：`record_vad()` 用阻塞 `stream.read()`，而本机**系统默认输入设备（MME：「阵列麦克风 (AMD Audio Device)」）能打开却永远供不出音频块** → 读调用永久挂住，VAD 永远等不到结束条件
+- 改为**逐个验证输入设备**：`.voice_config.json` 的 `input_device` → 系统默认 → 其余设备（DirectSound/WASAPI/MME 优先）依次试录，2 秒收不到音频块就判定不可用换下一个；选中的设备写进 `pet.log`
+- 录音改为「阻塞读 + 读线程 + 队列超时」：既拿得到数据又不会卡死（本机 pyaudio 0.2.14 的**回调模式对所有设备一个都不触发**，故不能用回调）
+- 录制中途 3 秒收不到音频块 → 明确报错中止，不再无限等待
+- 设备不支持 16 kHz 时自动改用其原生采样率录制，再重采样回 16 kHz
+
+### 变更
+- `启动语音助手.vbs`：`voice_gui.py` 的 stdout/stderr 追加到 `pet.err.log`（原来直接丢弃，线程异常完全看不见——本次排查就吃了这个亏）
+- 同步 `voice\` 备份目录
+
 ## [1.2.2] - 2026-10-06
 
 ### 修复

@@ -1229,4 +1229,12 @@ def main():
 
 
 if __name__ == "__main__":
+    # 原生崩溃（访问违例等）不会留 Python traceback —— 上一版"按 F2 闪退"就是这么瞎的。
+    # 打开 faulthandler，任何致命信号都会把当时的线程栈写进 pet_fault.log。
+    try:
+        import faulthandler
+        faulthandler.enable(open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                              "pet_fault.log"), "a"))
+    except Exception as _e:
+        print("[voice] faulthandler 未启用:", _e)
     main()

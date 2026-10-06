@@ -7,7 +7,7 @@
 被 voice_assistant.py（热键启动器）复用。
 依赖: sounddevice numpy faster-whisper（模型已放 whisper-base/ 本地目录）
 """
-import io, sys, os, json, time, uuid, datetime, subprocess, urllib.request, argparse, re
+import io, sys, os, json, time, uuid, datetime, subprocess, urllib.request, argparse, re, queue, threading
 
 # 控制台输出兜底：无法编码的字符（如 emoji）替换为 ?，不影响中文
 try:
@@ -762,11 +762,150 @@ def record(duration=5, sr=16000):
     sd.wait()
     return audio.flatten(), sr
 
+_INPUT_DEVICE = {"index": None, "name": None, "rate": None}   # 本次运行已验证可用的输入设备
+
+
+def _input_candidates(p):
+    """候选输入设备顺序：.voice_config.json 的 input_device -> 系统默认 -> 其余设备。
+    其余按 DirectSound/WASAPI/MME 排序，WDM-KS 之类排最后（大多打不开）。
+    本机默认输入能打开却永不供数，所以不能信默认，必须逐个验证。"""
+    cands = []
+    try:
+        cfg = os.path.join(BASE_DIR, ".voice_config.json")
+        if os.path.exists(cfg):
+            with open(cfg, encoding="utf-8") as f:
+                want = json.load(f).get("input_device")
+            if want is not None:
+                for i in range(p.get_device_count()):
+                    d = p.get_device_info_by_index(i)
+                    if d.get("maxInputChannels", 0) <= 0:
+                        continue
+                    if (isinstance(want, int) and i == want) or \
+                       (isinstance(want, str) and want.lower() in str(d.get("name", "")).lower()):
+                        cands.append(i)
+                        break
+    except Exception:
+        pass
+    try:
+        d = p.get_default_input_device_info()
+        idx = int(d.get("index"))
+        if d.get("maxInputChannels", 0) > 0 and idx not in cands:
+            cands.append(idx)
+    except Exception:
+        pass
+    order = {1: 0, 2: 1, 0: 2}
+    rest = []
+    for i in range(p.get_device_count()):
+        try:
+            d = p.get_device_info_by_index(i)
+        except Exception:
+            continue
+        if d.get("maxInputChannels", 0) <= 0 or i in cands:
+            continue
+        rest.append((order.get(d.get("hostApi"), 3), i))
+    rest.sort()
+    cands += [i for _, i in rest]
+    return cands
+
+
+_DEAD_STREAMS = []   # 死流：故意不关，留给它自己的读线程（关它会和阻塞中的 read 相撞）
+_DEAD_DEVICES = set()  # 本次运行确认"能打开但供不出数据"的设备，不再重试
+_PA = None           # 全局唯一的 PyAudio 实例：**永不 terminate**
+
+
+def _pa():
+    """全局唯一 PyAudio 实例，绝不 terminate。
+    v1.2.4 血案：v1.2.3 每条 F2 都 new 一个 PyAudio 并在 finally 里 terminate，
+    而它自己的读线程还阻塞在 stream.read() 里 —— 两个线程在 PortAudio 内部相撞，
+    实测访问违例（exit -1073741819 / 0xC0000005，faulthandler 抓到
+    read 与 terminate 两线程对峙），按 F2 说完话桌宠立刻闪退。
+    结论：实例留着（内存很小）；流的收尾交给它自己的读线程；
+    **绝不能在别的线程还阻塞于 read 时 terminate/close**。"""
+    global _PA
+    if _PA is None:
+        import pyaudio
+        _PA = pyaudio.PyAudio()
+    return _PA
+
+
+class _Input:
+    """一条输入流 + 它的读线程。流的生命周期完全由读线程自己管：
+    主线程只通过 stop_evt 请求停止，读线程在 read() 返回后自己 stop/close，
+    因此永远不会出现"别的线程正阻塞在 read 里、流却被关掉"的竞态。"""
+
+    def __init__(self, stream, rate, q, stop_evt):
+        self.stream = stream
+        self.rate = rate
+        self.q = q
+        self.stop_evt = stop_evt
+
+    def request_stop(self):
+        self.stop_evt.set()
+
+
+def _open_input(p, idx, sr, wait=2.0):
+    """打开 idx 并确认真的收到音频块（先按 sr，失败再按设备原生采样率）。
+    用【阻塞读 + 读线程 + 队列】：本机 pyaudio 0.2.14 的回调一个都不触发，
+    阻塞读却是 0.01 秒就来数据；而 get_read_available() 在本机驱动上恒为 0，
+    不能用来探活。成功返回 _Input；失败返回 None（死流故意不关）。"""
+    import pyaudio
+
+    if idx is None or idx in _DEAD_DEVICES:
+        return None
+    rates = [sr]
+    try:
+        nat = int(p.get_device_info_by_index(idx).get("defaultSampleRate") or 0)
+        if nat and nat != sr:
+            rates.append(nat)
+    except Exception:
+        pass
+    for rate in rates:
+        q = queue.Queue()
+        stop_evt = threading.Event()
+        st = None
+        try:
+            st = p.open(format=pyaudio.paInt16, channels=1, rate=rate, input=True,
+                        input_device_index=idx, frames_per_buffer=1024)
+        except Exception:
+            continue
+
+        def reader(st=st, q=q, ev=stop_evt):
+            while True:
+                try:
+                    data = st.read(1024, exception_on_overflow=False)
+                except Exception:
+                    break
+                if ev.is_set():
+                    break
+                if q.qsize() < 400:
+                    q.put(data)
+            try:
+                st.stop_stream()      # 由读线程自己收尾：此刻它已不在 read 里 → 安全
+                st.close()
+            except Exception:
+                pass
+
+        threading.Thread(target=reader, daemon=True).start()
+        try:
+            q.get(timeout=wait)
+            return _Input(st, rate, q, stop_evt)
+        except queue.Empty:
+            _DEAD_STREAMS.append(st)   # 供不出数据：留给它的读线程，别碰
+            _DEAD_DEVICES.add(idx)
+            continue
+    _DEAD_DEVICES.add(idx)
+    return None
+
+
 def record_vad(max_seconds=600, silence_seconds=1.2, sr=16000, on_state=None):
     """PyAudio 录音 + 静音检测：有声音就一直录，静默 silence_seconds 自动停止。
     max_seconds 只是异常兜底（10 分钟），正常不受限。
+    关键修复：旧实现用阻塞的 stream.read()，遇到"能打开但永不供数"的设备会永远卡在
+    "我在听"（本机默认输入就是这种）；上一版用读线程 + 队列解了这个，
+    但退出时在有线程阻塞于 read() 的情况下 terminate/close → 必崩（见 _pa 注释）。
+    本版：全局唯一 PyAudio 永不 terminate；设备先用非阻塞 get_read_available() 验活；
+    录音用「读前查可读帧数」的阻塞读 —— **全程不用后台线程**，所以能安全 stop/close。
     返回 (numpy int16, sr)；失败返回 (None, sr)。on_state(msg) 说话状态回调。"""
-    import pyaudio
     import numpy as np
 
     def state(msg):
@@ -776,36 +915,63 @@ def record_vad(max_seconds=600, silence_seconds=1.2, sr=16000, on_state=None):
             print(msg, flush=True)
 
     CHUNK = 1024
-    p = pyaudio.PyAudio()
+    inp = None
+    use_rate = sr
     try:
-        stream = p.open(format=pyaudio.paInt16, channels=1, rate=sr,
-                        input=True, frames_per_buffer=CHUNK)
-    except Exception as e:
-        state(f"[voice] 麦克风打开失败: {e}")
-        try:
-            p.terminate()
-        except Exception:
-            pass
-        return None, sr
+        p = _pa()
+        if _INPUT_DEVICE["index"] is not None:          # 复用本次运行已验证的设备
+            inp = _open_input(p, _INPUT_DEVICE["index"], sr)
+            if inp is None:
+                _INPUT_DEVICE.update({"index": None, "name": None, "rate": None})
+            else:
+                use_rate = inp.rate
+        if inp is None:
+            for idx in _input_candidates(p):
+                if idx in _DEAD_DEVICES:
+                    continue
+                got = _open_input(p, idx, sr)
+                if got is None:
+                    continue
+                try:
+                    name = p.get_device_info_by_index(idx).get("name")
+                except Exception:
+                    name = "?"
+                inp, use_rate = got, got.rate
+                _INPUT_DEVICE.update({"index": idx, "name": name, "rate": got.rate})
+                state("[voice] 输入设备 #%d %s @%dHz" % (idx, name, got.rate))
+                break
+        if inp is None:
+            state("[voice] ❌ 所有输入设备都收不到音频数据（能打开但没有音频块）："
+                  "请换一个系统默认输入设备，或在 .voice_config.json 里加 input_device。")
+            return None, sr
 
-    frames = []
-    state("[voice] 🎤 我在听，请说话…")
-    talking = False
-    silence = 0
-    start_silence = 0
-    noise = 0.0
-    threshold = 100.0
-    max_chunks = int(sr / CHUNK * max_seconds)
-    silence_need = int(silence_seconds * sr / CHUNK)
-    start_need = int(4.0 * sr / CHUNK)  # 4 秒内没开口就自动停
-    try:
+        frames = []
+        state("[voice] 🎤 我在听，请说话…")
+        talking = False
+        silence = 0
+        start_silence = 0
+        noise = 0.0
+        threshold = 100.0
+        max_chunks = int(use_rate / CHUNK * max_seconds)
+        silence_need = max(1, int(silence_seconds * use_rate / CHUNK))
+        start_need = max(1, int(4.0 * use_rate / CHUNK))  # 4 秒内没开口就自动停
+        starved = 0.0
         while len(frames) < max_chunks:
             try:
-                data = stream.read(CHUNK, exception_on_overflow=False)
-            except Exception:
-                break
+                data = inp.q.get(timeout=0.5)
+            except queue.Empty:
+                data = None
+            if data is None:
+                starved += 0.5
+                if starved >= 3.0:
+                    state("[voice] ⚠️ 3 秒收不到音频块，录音中止（设备被占用或已失效）")
+                    if _INPUT_DEVICE.get("index") is not None:
+                        _DEAD_DEVICES.add(_INPUT_DEVICE["index"])
+                    break
+                continue
+            starved = 0.0
             a = np.frombuffer(data, dtype=np.int16).astype("float32")
-            rms = float(np.sqrt(np.mean(a * a)))
+            rms = float(np.sqrt(np.mean(a * a))) if a.size else 0.0
             frames.append(data)
             if rms >= threshold:  # 超过背景噪声阈值才算说话（自适应，轻声也能触发）
                 if not talking:
@@ -824,20 +990,22 @@ def record_vad(max_seconds=600, silence_seconds=1.2, sr=16000, on_state=None):
                 start_silence += 1
                 if start_silence >= start_need:
                     break
+    except BaseException as e:      # 兜底：任何异常只记日志，绝不把桌宠打死
+        state("[voice] ⚠️ 录音异常（已捕获，桌宠继续运行）：%s: %s" % (type(e).__name__, e))
+        return None, sr
     finally:
-        try:
-            stream.stop_stream()
-            stream.close()
-        except Exception:
-            pass
-        try:
-            p.terminate()
-        except Exception:
-            pass
+        if inp is not None:
+            inp.request_stop()      # 只请求停止：流的 stop/close 由读线程自己收尾
     state("[voice] ✓ 录音结束")
     if not frames:
         return None, sr
-    return np.frombuffer(b"".join(frames), dtype=np.int16), sr
+    audio = np.frombuffer(b"".join(frames), dtype=np.int16)
+    if use_rate != sr and audio.size:      # 用设备原生采样率录的 → 重采样到 sr
+        n = max(1, int(audio.size * sr / float(use_rate)))
+        audio = np.interp(np.linspace(0, audio.size - 1, n),
+                          np.arange(audio.size),
+                          audio.astype("float32")).astype("int16")
+    return audio, sr
 
 def recognize_sapi(timeout_sec=8):
     """Windows 内置语音识别（System.Speech，零依赖，实时，说完自动返回）。

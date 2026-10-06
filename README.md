@@ -143,12 +143,15 @@ dsh-voice-pet/
 - **桌宠很糊**：确认 `pet_size` 不要太小（150 起步），程序已内置高 DPI 渲染 + 锐化；原图分辨率越高越清晰
 - **抠图有白边/抠不干净**：调整 `white_threshold`（提高更狠）
 - **听不到我说话**：跑 `npx dsh-voice-pet doctor` 扫描麦克风；检查 Windows 麦克风权限
+- **F2 卡在「🎤 我在听，请说话…」不往下走**：录音调用被卡住。v1.2.3 起桌宠会**逐个试输入设备**（2 秒收不到音频块就换下一个），并把选中的设备写进 `pet.log`（如 `输入设备 #4 … @16000Hz`）。仍不行就跑 `python scan_devices.py` 看哪个设备有电平，然后在 `.voice_config.json` 指定：`{"input_device": 4}`（索引）或 `{"input_device": "阵列麦克风"}`（名字片段）。本机实测：系统默认那条 MME「阵列麦克风」能打开但**永远不出数据**，能用的走 DirectSound（索引 4）。
 - **识别不准**：清晰慢速说话；说错的同音词先说对一遍（会进词库自动纠错）
 - **桌宠不会缩进去**：必须拖到**屏幕左右边缘 70px 内**松手，它才吸附收缩
 - **播报没声音**：检查音量；edge-tts 需要网络（无网自动回退系统语音）
 - **改了代码没生效**：桌宠是常驻进程，改完要**重启桌宠**（托盘退出 → 重新启动）
 - **F2 没反应 / 报 401（token 失效）**：桌面端 token **每次启动都变**，只有「带日志启动」才会把 `dsh web: http://127.0.0.1:19387/?token=…` 写进 `voice\dsh-desktop.log`。直接双击桌面端 → 日志里永远是旧 token → F2 必 401。修法：用 `python voice\launch_desktop.py`（或 `dsh-voice-pet\watcher.py`）启动/重启桌面端。桌宠现在会把原因写进 `pet.log`：`未找到启动日志 token…` 或 `启动日志里的 token 已失效（401）…`。
 - **桌宠起来就退出**：看 `pet.err.log`。若是 `No module named 'pynput'`，说明启动用的 Python 没带上用户级依赖目录（Store 版 Python 从沙箱/受限令牌里启动时会这样）；正常双击 `启动语音助手.vbs` 不受影响。
+
+- **按 F2 说完话桌宠立刻闪退（连报错都没有）**：v1.2.3 的录音在退出时会在"自己的读线程还阻塞在 `read()` 里"的情况下 `terminate()` PortAudio → **访问违例（0xC0000005）**，属原生崩溃，Python 层看不到 traceback。v1.2.4 起：全局唯一 PyAudio 实例**永不 terminate**，一条流的收尾交给读它的那条线程；崩溃兜底 + 入口 `faulthandler`（致命信号写 `pet_fault.log`）。另：`recognize_sapi()` 走 Windows 系统默认输入设备（本机是那条坏掉的 MME），所以 SAPI 兜底在本机不可用，主链路 `recognize_whisper()` 不受影响。
 
 ## 📄 License
 
