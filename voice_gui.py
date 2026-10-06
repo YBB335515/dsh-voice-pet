@@ -1215,7 +1215,12 @@ def main():
     if not single_instance():
         print("桌宠已在运行，本实例自动退出")
         return
-    gui_sid, voice_sid = vc.ensure_voice_sessions()
+    try:
+        gui_sid, voice_sid = vc.ensure_voice_sessions()
+    except Exception as e:
+        # 任何初始化异常都不该打死桌宠（典型：token 缺失/失效导致 401）
+        print("[voice] 初始化会话异常（桌宠继续常驻）:", e)
+        gui_sid = voice_sid = None
     start_webhook_server()  # 接收 DSH 通知（回合完成/待审批）
     listener = keyboard.Listener(on_press=on_press)
     listener.start()

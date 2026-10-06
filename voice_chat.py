@@ -160,36 +160,43 @@ _LOG_CANDIDATES = (
     os.path.join(WORKSPACE, "deepseek-harness-next", "dsh-runtime.log"),
     os.path.join(WORKSPACE, "deepseek-harness", "dsh-runtime.log"),
 )
-_ENDPOINT = {"base": None, "token": None, "stamp": None}
+_ENDPOINT = {"base": None, "token": None, "stamp": None, "log": None}
 _PROBE = {"base": None, "ts": 0.0}
+_WARNED = set()
 
 
 def _discover_endpoint():
-    """从启动日志发现 DSH 地址与启动 token（桌面端 token 每次启动都变）。"""
-    newest = None
+    """从启动日志发现 DSH 地址与启动 token（桌面端 token 每次启动都变）。
+
+    候选日志按 mtime 从新到旧扫描，取「最新且真的含 token」的那一份：桌面端
+    token 每次启动都变，只有被重定向捕获了 stdout 的那次启动才留得下新 token。
+    """
+    cands = []
     for lg in _LOG_CANDIDATES:
         try:
             if os.path.exists(lg):
-                mt = os.path.getmtime(lg)
-                if newest is None or mt > newest[0]:
-                    newest = (mt, lg)
+                cands.append((os.path.getmtime(lg), lg))
         except Exception:
             pass
-    if newest is None:
-        return None
-    mt, lg = newest
-    if _ENDPOINT.get("stamp") == (mt, lg):
+    if not cands:
+        _ENDPOINT.update({"base": None, "token": None, "stamp": None, "log": None})
         return _ENDPOINT
-    base = token = None
-    try:
-        with open(lg, encoding="utf-8", errors="replace") as f:
-            text = f.read()
+    cands.sort(reverse=True)
+    stamp = tuple(cands)
+    if _ENDPOINT.get("stamp") == stamp:
+        return _ENDPOINT
+    base = token = used = None
+    for mt, lg in cands:
+        try:
+            with open(lg, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except Exception:
+            continue
         hits = re.findall(r"(http://127\.0\.0\.1:\d+)/?\?token=([A-Za-z0-9_\-]+)", text)
         if hits:
-            base, token = hits[-1][0], hits[-1][1]
-    except Exception:
-        pass
-    _ENDPOINT.update({"base": base, "token": token, "stamp": (mt, lg)})
+            base, token, used = hits[-1][0], hits[-1][1], lg
+            break
+    _ENDPOINT.update({"base": base, "token": token, "stamp": stamp, "log": used})
     return _ENDPOINT
 
 
@@ -263,6 +270,28 @@ def _is_next():
     return bool(_API["next"])
 
 
+def _warn(msg, key):
+    """同一条提示只印一次，避免每次调用都把 pet.log 刷爆。"""
+    if key in _WARNED:
+        return
+    _WARNED.add(key)
+    print("[voice] " + msg)
+
+
+def _warn_no_token():
+    have = [lg for lg in _LOG_CANDIDATES if os.path.exists(lg)]
+    _warn("未找到启动日志 token：当前桌面端像是双击启动的（stdout 没进日志）→ F2 会 401。"
+          "请用 voice\\launch_desktop.py 启动/重启桌面端。已查日志: "
+          + ("; ".join(have) if have else "(都不存在)"), "no-token")
+
+
+def _warn_stale_token(ep=None):
+    lg = (ep or {}).get("log")
+    _warn("启动日志里的 token 已失效（401）：当前桌面端不是带日志启动的。"
+          "请用 voice\\launch_desktop.py 重启桌面端。" + ("日志: " + lg if lg else ""),
+          "stale-token:" + str(lg))
+
+
 def _next_cookie():
     """新版认证：读 DSH 启动日志里的 token，用 /?token= 换会话 cookie。"""
     now = time.time()
@@ -273,7 +302,7 @@ def _next_cookie():
     tok = ep.get("token") if (ep.get("base") and _alive(ep["base"])) else None
     if not tok:
         # 没有可用 token（桌面端未带日志启动）：走探活到的地址，由调用方收到 401
-        tok = None
+        _warn_no_token()
         _base()
         return None
     if _COOKIE.get("base") != base:
@@ -289,6 +318,8 @@ def _next_cookie():
             _COOKIE["base"] = base
             return _COOKIE["header"]
     except Exception as e:
+        if getattr(e, "code", None) == 401:
+            _warn_stale_token(ep)
         print("[voice] DSH 认证失败:", e)
     return None
 
@@ -590,18 +621,35 @@ def ensure_voice_sessions():
             cands.sort(key=lambda i: i.get("updatedAt") or 0, reverse=True)
             gui = cands[0]["sessionId"]
         else:
-            gui = rpc("session.create", {"cwd": WORKSPACE, "agentPreset": "standard"})["sessionId"]
+            gui = _create_session("standard")
 
     # voice 轻量：缓存 → 新建（minimal 极简模式：思考少、回答快）
     voice = cache.get("voice") if cache.get("voice") in ids else None
     if not voice:
-        created = rpc("session.create", {"cwd": WORKSPACE, "agentPreset": "minimal"})
-        voice = created["sessionId"]
-        print(f"[voice] 新建轻量语音会话（极简模式） {voice}")
+        voice = _create_session("minimal")
+        if voice:
+            print(f"[voice] 新建轻量语音会话（极简模式） {voice}")
 
-    with open(SESSION_CACHE, "w", encoding="utf-8") as f:
-        json.dump({"gui": gui, "voice": voice}, f, ensure_ascii=False)
+    if gui and voice:
+        with open(SESSION_CACHE, "w", encoding="utf-8") as f:
+            json.dump({"gui": gui, "voice": voice}, f, ensure_ascii=False)
+    else:
+        _warn("初始化会话失败：拿不到 DSH 会话（多半是 token 缺失/失效 → F2 会 401）。"
+              "桌宠会继续常驻但问不了问题；请用 voice\\launch_desktop.py 重启桌面端，再重启桌宠。",
+              "init-sessions-failed")
     return gui, voice
+
+
+def _create_session(preset):
+    """建会话；认证失败（401）等异常不许把桌宠打挂，失败就返回 None。"""
+    try:
+        return rpc("session.create", {"cwd": WORKSPACE, "agentPreset": preset})["sessionId"]
+    except Exception as e:
+        if getattr(e, "code", None) == 401:
+            _warn_stale_token(_discover_endpoint())
+        else:
+            print("[voice] 建会话失败:", e)
+        return None
 
 
 def ask(session_id, text, timeout=180, on_status=None, switch_after=None):
