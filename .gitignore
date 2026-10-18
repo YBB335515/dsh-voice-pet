@@ -27,3 +27,6 @@ _*.py
 _*.png
 pet.log
 pet.err.log
+
+# 本地依赖目录（pip --target libs）
+libs/

@@ -1,0 +1,3 @@
+[voice] 启动日志里的 token 已失效（401）：当前桌面端不是带日志启动的。请用 voice\launch_desktop.py 重启桌面端。日志: D:\1_claude尝试\voice\dsh-desktop.log
+[voice] DSH 认证失败: HTTP Error 401: Unauthorized
+[voice] DSH 认证失败: HTTP Error 401: Unauthorized

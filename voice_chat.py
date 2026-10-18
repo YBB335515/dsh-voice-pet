@@ -148,15 +148,17 @@ def correct_homophones(text, texts=None, max_dist=1):
     return result
 
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))   # D:\1_claude尝试\voice
-WORKSPACE = os.path.dirname(BASE_DIR)                    # D:\1_claude尝试
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))   # D:\1_claude尝试\桌宠\voice
+_WS_PARENT = os.path.dirname(BASE_DIR)                   # D:\1_claude尝试\桌宠
+# 源码收进「桌宠」容器目录后，工作区要再上一级
+WORKSPACE = os.path.dirname(_WS_PARENT) if os.path.basename(_WS_PARENT) == "桌宠" else _WS_PARENT
 SESSION_CACHE = os.path.join(BASE_DIR, ".voice_session.json")
 SPEAK_PS1 = os.path.join(BASE_DIR, "speak.ps1")
 DSH_URL = "http://127.0.0.1:3080"   # 旧版（web 构建）默认端口；发现失败时回退
 DESKTOP_PORT = 19387                # 桌面端固定端口（其 bundle 内写死）
 _LOG_CANDIDATES = (
     os.path.join(BASE_DIR, "dsh-desktop.log"),
-    os.path.join(WORKSPACE, "voice", "dsh-desktop.log"),
+    os.path.join(WORKSPACE, "桌宠", "voice", "dsh-desktop.log"),
     os.path.join(WORKSPACE, "deepseek-harness-next", "dsh-runtime.log"),
     os.path.join(WORKSPACE, "deepseek-harness", "dsh-runtime.log"),
 )
@@ -166,38 +168,13 @@ _WARNED = set()
 
 
 def _discover_endpoint():
-    """从启动日志发现 DSH 地址与启动 token（桌面端 token 每次启动都变）。
-
-    候选日志按 mtime 从新到旧扫描，取「最新且真的含 token」的那一份：桌面端
-    token 每次启动都变，只有被重定向捕获了 stdout 的那次启动才留得下新 token。
-    """
-    cands = []
-    for lg in _LOG_CANDIDATES:
-        try:
-            if os.path.exists(lg):
-                cands.append((os.path.getmtime(lg), lg))
-        except Exception:
-            pass
-    if not cands:
-        _ENDPOINT.update({"base": None, "token": None, "stamp": None, "log": None})
-        return _ENDPOINT
-    cands.sort(reverse=True)
-    stamp = tuple(cands)
-    if _ENDPOINT.get("stamp") == stamp:
-        return _ENDPOINT
-    base = token = used = None
-    for mt, lg in cands:
-        try:
-            with open(lg, encoding="utf-8", errors="replace") as f:
-                text = f.read()
-        except Exception:
-            continue
-        hits = re.findall(r"(http://127\.0\.0\.1:\d+)/?\?token=([A-Za-z0-9_\-]+)", text)
-        if hits:
-            base, token, used = hits[-1][0], hits[-1][1], lg
-            break
-    _ENDPOINT.update({"base": base, "token": token, "stamp": stamp, "log": used})
-    return _ENDPOINT
+    """委托给 dsh_probe：从日志找 (base, token)，只认端口仍活着的。"""
+    try:
+        import dsh_probe
+        b, t = dsh_probe.from_log()
+        return {"base": b, "token": t}
+    except Exception:
+        return None
 
 
 def _alive(base, timeout=2):
@@ -212,48 +189,15 @@ def _alive(base, timeout=2):
 
 
 def _base():
-    """当前 DSH base URL：启动日志（且在跑）-> 环境变量 -> 探活 19387/3080 -> 回退 3080。"""
-    ep = _discover_endpoint() or {}
-    if ep.get("base") and _alive(ep["base"]):
-        return ep["base"]
-    now = time.time()
-    if _PROBE["base"] and now - _PROBE["ts"] < 60:
-        return _PROBE["base"]
-    cands = []
-    env = os.environ.get("DSH_WEB_URL")
-    if env:
-        cands.append(env.rstrip("/"))
-    cands += ["http://127.0.0.1:%d" % DESKTOP_PORT, DSH_URL]
-    for c in cands:
-        try:
-            urllib.request.urlopen(c + "/", timeout=2)
-            _PROBE.update({"base": c, "ts": now})
-            return c
-        except urllib.error.HTTPError:
-            _PROBE.update({"base": c, "ts": now})   # 401 也说明服务已起
-            return c
-        except Exception:
-            continue
+    """当前 DSH base URL：日志 -> 环境变量 -> 端口扫描 -> 回退 3080。"""
+    try:
+        import dsh_probe
+        b, _t = dsh_probe.discover()
+        if b:
+            return b
+    except Exception:
+        pass
     return DSH_URL
-
-
-_whisper_model = None
-
-# ── DSH 版本兼容层 ────────────────────────────────────────────
-# 新版 DSH（deepseek-harness-next）：需要 token 认证（换 cookie）、
-#   端点与方法名用斜杠（session/list）、参数按签名包装（request / _request）、
-#   且没有 session.history（改用 session/page 读事件）。
-# 旧版 DSH：无认证、点号端点、payload 直传。
-_API = {"next": None}
-_COOKIE = {"header": None, "ts": 0.0, "base": None}
-_NEXT_WRAP = {
-    "session.list": "_request",
-    "session.create": "request",
-    "session.prompt": "request",
-    "session.page": "request",
-    "session.cancel": "request",
-}
-_NEXT_PRESET = {"standard": "ptc", "code": "ptc", "minimal": "ptc", "cordis": "ptc"}
 
 
 def _is_next():

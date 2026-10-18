@@ -8,9 +8,21 @@ DSH 鲸鱼桌宠（语音助手）— 透明置顶小宠物 + 思考气泡 + 全
 - 思考完成 → 语音播报回答
 """
 import sys, os, queue, threading, json, subprocess, winsound, webbrowser, time
+# 本地依赖目录（pip install --target libs ...）：必须早于第三方 import
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _lib in (os.path.join(_HERE, "libs"),
+             os.path.join(os.path.dirname(_HERE), "voice", "libs"),
+             os.path.join(os.path.dirname(_HERE), "libs")):
+    if os.path.isdir(_lib) and _lib not in sys.path:
+        sys.path.insert(0, _lib)
+
 import tkinter as tk
 from tkinter import font as tkfont
-from pynput import keyboard
+try:
+    from pynput import keyboard
+except Exception as _pynput_err:      # 缺 pynput 时降级：F2 热键停用，托盘/双击仍可用
+    keyboard = None
+    print("[voice] pynput 不可用，F2 热键停用:", _pynput_err, flush=True)
 import voice_chat as vc
 
 if sys.platform == "win32":
@@ -1222,7 +1234,7 @@ def main():
         print("[voice] 初始化会话异常（桌宠继续常驻）:", e)
         gui_sid = voice_sid = None
     start_webhook_server()  # 接收 DSH 通知（回合完成/待审批）
-    listener = keyboard.Listener(on_press=on_press)
+    listener = keyboard.Listener(on_press=on_press) if keyboard is not None else None
     listener.start()
     build_pet()
     pet_root.mainloop()

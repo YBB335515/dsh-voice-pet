@@ -27,16 +27,13 @@ NEW_GROUP = 0x00000200
 
 
 def any_dsh_ready():
-    """任一候选地址有 HTTP 响应就算就绪（401 也说明服务已起）。"""
-    for u in PROBE_URLS:
-        try:
-            urllib.request.urlopen(u, timeout=3)
-            return True
-        except urllib.error.HTTPError:
-            return True
-        except Exception:
-            continue
-    return False
+    """任意端口上的 DSH 可用即视为就绪（端口每次启动都可能变化）。"""
+    try:
+        import dsh_probe
+        b, _t = dsh_probe.discover(refresh=True)
+        return bool(b)
+    except Exception:
+        return False
 
 
 def desktop_running():
