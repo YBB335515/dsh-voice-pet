@@ -148,8 +148,8 @@ def correct_homophones(text, texts=None, max_dist=1):
     return result
 
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))   # D:\1_claude尝试\桌宠\voice
-_WS_PARENT = os.path.dirname(BASE_DIR)                   # D:\1_claude尝试\桌宠
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))   # D:\1_claude_try\桌宠\voice
+_WS_PARENT = os.path.dirname(BASE_DIR)                   # D:\1_claude_try\桌宠
 # 源码收进「桌宠」容器目录后，工作区要再上一级
 WORKSPACE = os.path.dirname(_WS_PARENT) if os.path.basename(_WS_PARENT) == "桌宠" else _WS_PARENT
 SESSION_CACHE = os.path.join(BASE_DIR, ".voice_session.json")
@@ -426,8 +426,9 @@ def classify_task(text):
 
 # ── 定时提醒 ──────────────────────────────────────────────────────
 REMINDS_FILE = os.path.join(BASE_DIR, ".reminders.json")
-TODO_TASKS_FILE = r"D:\1_claude尝试\desktop-todo-widget\data\tasks.json"
-
+_TODO_DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
+                              "DesktopTodoWidget", "data")
+TODO_TASKS_FILE = os.path.join(_TODO_DATA_DIR, "tasks.json")
 
 def parse_reminder(text):
     """解析定时提醒。返回 (due: datetime, content: str) 或 None。
@@ -489,6 +490,8 @@ def parse_reminder(text):
 
 def add_todo_reminder(due_iso, content):
     """写入桌面待办 tasks.json（第一页追加，待办 app 每秒自动重载）。"""
+    if not os.path.exists(TODO_TASKS_FILE):
+        os.makedirs(_TODO_DATA_DIR, exist_ok=True)
     with open(TODO_TASKS_FILE, encoding="utf-8") as f:
         data = json.load(f)
     pages = data.setdefault("pages", [])

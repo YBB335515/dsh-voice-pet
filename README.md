@@ -37,7 +37,7 @@
 
 ### 前提
 - Windows 10/11，Python 3.10+，Node.js 18+
-- [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) 已安装并在 **3080 端口**运行
+- [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) 已安装（端口/token 由桌宠自动探测，无需固定配置）
 
 ### 方式一：npm 一键
 
@@ -148,7 +148,7 @@ dsh-voice-pet/
 - **桌宠不会缩进去**：必须拖到**屏幕左右边缘 70px 内**松手，它才吸附收缩
 - **播报没声音**：检查音量；edge-tts 需要网络（无网自动回退系统语音）
 - **改了代码没生效**：桌宠是常驻进程，改完要**重启桌宠**（托盘退出 → 重新启动）
-- **F2 没反应 / 报 401（token 失效）**：桌面端 token **每次启动都变**，只有「带日志启动」才会把 `dsh web: http://127.0.0.1:19387/?token=…` 写进 `voice\dsh-desktop.log`。直接双击桌面端 → 日志里永远是旧 token → F2 必 401。修法：用 `python voice\launch_desktop.py`（或 `dsh-voice-pet\watcher.py`）启动/重启桌面端。桌宠现在会把原因写进 `pet.log`：`未找到启动日志 token…` 或 `启动日志里的 token 已失效（401）…`。
+- **F2 没反应 / 报 401（token 失效）**：桌面端 token **每次启动都变**，只有「带日志启动」才会把 `dsh web: http://127.0.0.1:<动态端口>/?token=…` 写进 `dsh-desktop.log`（launcher 所在目录）。直接双击桌面端 → 日志里永远是旧 token → F2 必 401。修法：用 `python launch_desktop.py` 或 `python watcher.py`（开机 lnk、启动语音助手.bat/vbs 都走 watcher）启动/重启桌面端。桌面端 exe 自动从候选发现：环境变量 `DSH_DESKTOP_EXE` > 系统安装版（`D:\DeepSeekHarness`）> 旧工作区版。桌宠现在会把原因写进 `pet.log`：`未找到启动日志 token…` 或 `启动日志里的 token 已失效（401）…`。
 - **桌宠起来就退出**：看 `pet.err.log`。若是 `No module named 'pynput'`，说明启动用的 Python 没带上用户级依赖目录（Store 版 Python 从沙箱/受限令牌里启动时会这样）；正常双击 `启动语音助手.vbs` 不受影响。
 
 - **按 F2 说完话桌宠立刻闪退（连报错都没有）**：v1.2.3 的录音在退出时会在"自己的读线程还阻塞在 `read()` 里"的情况下 `terminate()` PortAudio → **访问违例（0xC0000005）**，属原生崩溃，Python 层看不到 traceback。v1.2.4 起：全局唯一 PyAudio 实例**永不 terminate**，一条流的收尾交给读它的那条线程；崩溃兜底 + 入口 `faulthandler`（致命信号写 `pet_fault.log`）。另：`recognize_sapi()` 走 Windows 系统默认输入设备（本机是那条坏掉的 MME），所以 SAPI 兜底在本机不可用，主链路 `recognize_whisper()` 不受影响。

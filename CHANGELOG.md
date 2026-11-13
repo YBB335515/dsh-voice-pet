@@ -2,6 +2,16 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.2.5] - 2026-11-13
+
+### 修复
+- **工作区从 1_claude尝试 迁到 1_claude_try、DSH 桌面端改装到系统目录后，桌宠开机自启与问答全断**：三处失联一起修
+  - 开机启动项 lnk 指向已不存在的旧路径 → 重写为 pythonw + 新目录 watcher.py
+  - watcher / launch_desktop 找桌面端硬编码「工作区桌面端」 → 改为候选自动发现（DSH_DESKTOP_EXE 环境变量 > D:DeepSeekHarness 系统安装版 > 旧位置），并适配「桌宠」容器目录的 WORKSPACE 推断
+  - voice_chat 的待办提醒写入路径指向待办 app 已废弃的旧数据目录 → 改读 %LOCALAPPDATA%DesktopTodoWidgetdata	asks.json（待办 v1.0.12 起的统一数据位置）
+- 启动语音助手.bat/.vbs 重写：不再硬编码 3080 端口探测、不再走 Store 别名 python（会静默失败），统一 CRLF + 纯 ASCII，改为调 watcher 全流程（带日志拉起 DSH → 等就绪 → 起桌宠）
+- 主目录（dsh-voice-pet）同步到备份目录（voice），两边代码与 .voice_config.json 一致
+
 ## [1.2.4] - 2026-10-06
 
 ### 修复

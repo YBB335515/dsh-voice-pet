@@ -2,8 +2,9 @@
 """开机自启启动器（桌面端 / 网页版通吃）
 
 1. 找 DSH：
-   - 桌面端没在跑 → 用「重定向日志」的方式拉起 DeepSeek Harness.exe，
-     它会打印一行带 token 的启动地址（printUrl 默认开），供桌宠自动认证；
+   - 桌面端没在跑 → 用「重定向日志」的方式拉起 DeepSeek Harness.exe（launch_desktop
+     自动发现系统安装版/旧工作区版），它会打印一行带 token 的启动地址
+     （printUrl 默认开），供桌宠自动认证；
    - 找不到桌面端 → 回退旧版「启动 DeepSeek Harness.bat」。
 2. 等 DSH 就绪（候选端口有 HTTP 响应即可，401 也算就绪）。
 3. 就绪后启动语音桌宠（隐藏窗口）。
@@ -16,12 +17,11 @@ import urllib.error
 import urllib.request
 
 VOICE_DIR = os.path.dirname(os.path.abspath(__file__))
-WORKSPACE = os.path.dirname(VOICE_DIR)
-DESKTOP_DIR = os.path.join(WORKSPACE, "dsh桌面端")
-DESKTOP_EXE = os.path.join(DESKTOP_DIR, "DeepSeek Harness.exe")
+_WS_PARENT = os.path.dirname(VOICE_DIR)
+# 源码收进「桌宠」容器目录后，工作区要再上一级
+WORKSPACE = os.path.dirname(_WS_PARENT) if os.path.basename(_WS_PARENT) == "桌宠" else _WS_PARENT
 DESKTOP_LOG = os.path.join(VOICE_DIR, "dsh-desktop.log")
 LEGACY_BAT = os.path.join(WORKSPACE, "deepseek-harness", "启动 DeepSeek Harness.bat")
-PROBE_URLS = ("http://127.0.0.1:19387/", "http://127.0.0.1:3080/")
 NO_WINDOW = 0x08000000
 NEW_GROUP = 0x00000200
 
@@ -48,27 +48,16 @@ def desktop_running():
 
 
 def start_desktop():
-    """启动桌面端：优先用 launch_desktop（分配隐藏控制台 + 日志重定向）。
+    """启动桌面端：必须走 launch_desktop（分配隐藏控制台 + 日志重定向）。
 
-    隐藏控制台是必须的：Windows ACL 沙箱的受限令牌下，控制台子进程必须继承控制台，
-    否则会以 STATUS_DLL_INIT_FAILED (0xC0000142) 死掉（桌面端默认是无控制台的 GUI 进程）。
+    隐藏控制台是必须的：受限令牌下无控制台继承的 GUI 子进程会以
+    STATUS_DLL_INIT_FAILED (0xC0000142) 死掉。
     """
-    if not os.path.exists(DESKTOP_EXE):
-        return False
     try:
-        sys.path.insert(0, VOICE_DIR)
         import launch_desktop
-        launch_desktop.launch(DESKTOP_LOG)
-        return True
-    except Exception:
-        pass
-    try:
-        logf = open(DESKTOP_LOG, "ab", buffering=0)
-        logf.write(("\n=== watcher start (no console) %s ===\n" % time.strftime("%Y-%m-%d %H:%M:%S")).encode("utf-8"))
-        subprocess.Popen([DESKTOP_EXE], cwd=DESKTOP_DIR,
-                         stdout=logf, stderr=subprocess.STDOUT,
-                         creationflags=NO_WINDOW | NEW_GROUP)
-        return True
+        if not launch_desktop.find_desktop_exe():
+            return False
+        return bool(launch_desktop.launch(DESKTOP_LOG))
     except Exception:
         return False
 
